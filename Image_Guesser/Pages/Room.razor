@@ -1,0 +1,597 @@
+﻿@page "/lobby"
+@using Microsoft.AspNetCore.Http
+@using Microsoft.AspNetCore.SignalR.Client
+@using Microsoft.AspNetCore.WebUtilities;
+@using Image_Guesser.Hubs;
+@using Image_Guesser.Data
+@using System.Timers
+@using System.Collections.Specialized 
+@inject NavigationManager NavigationManager
+
+
+<div class="gamePage">
+    <h1 style="text-align:center; display: @lobbyDisplay"> Room @gameCode </h1>
+    <div class="lobbyContainer" style="display:@lobbyDisplay; margin:0 auto; text-align:center; transform: translate(0, 15vh);">
+        
+        <h5 style="display: @enterNameScreenVisible"> Enter Username</h5>
+        <input id="userBox" style="display:@enterNameScreenVisible; margin: auto" @bind="userInput">
+        <button class="btn btn-primary" id="submitButton" @onclick="JoinRoom" disabled="@(!CanJoinLobby)" style="display:@enterNameScreenVisible; margin: auto; transform: translateY(5px);">Submit</button>
+
+        <button class="btn btn-primary" id="readyButton" @onclick="setReadyStatus" disabled="@(!IsConnected)" style="visibility:@readyButtonVisisble">set ready status</button>
+
+
+        <h2 style="display: @lobbyScreenVisible"> Players </h2>
+        <h2 style="display: @lobbyScreenVisible"> -------------------- </h2>
+
+        <ul id="userList" style="visibility:@lobbyScreenVisible; list-style: none;margin-left: -40px;">
+            @foreach (String user in users)
+            {
+                <li>@user</li>
+            }
+        </ul>
+
+        <button class="btn btn-primary" id="startButton" @onclick="SendGameStart" disabled="@(!IsConnected)" style="display:@lobbyScreenVisible; margin:auto; transform: translateY(5px);">Start Game</button>
+    </div>
+    <div class="gameContainer">
+        <div class="gameUserInfo">
+            <div style="float:left; visibility:@gameScreenVisible" class="gameUsername">@userInput</div>
+            <p class ="gameMessage"style="float:left; visibility:@gameScreenVisible;width: 250px; border:3px; border-style:solid; border-color: @color; text-align: center; transform:translate(24vw)"> @displayGameMessage</p>
+            <p>@closeMessage</p>
+            <p style="visibility:@gameScreenVisible;width: 150px; border:3px; border-style:solid; border-color: darkgreen; float: right"> Your Score: @score</p>
+        </div>
+        <p style="visibility:@gameScreenVisible;width: 400px; text-align: center"> @showTimer</p>
+
+        <table class="scoreList" style="opacity:@tableVis; display: @scoreListVisible; float:left;">
+        @{
+
+            for (int i = 0; i < users.Count; i++)
+            {
+                String playerName = users[i];
+                int score = scores[i];
+                <tr style="border: 2px solid">
+                    <th style="border: 2px solid">@playerName</th>
+                    <th style="border: 2px solid">@score</th>
+                </tr>
+            }
+        }
+        </table>
+        <img class="gameImage" src="@game.getCurrentImage().getImageUrl()" alt="@game.getCurrentImage().getCorrectName()" style="visibility:@gameScreenVisible;width:400px;height:340px;filter: blur(@game.getBlurValue()px); margin: auto">
+        
+        <ul class="gameChatMessages" style="visibility: @gameScreenVisible; height: 100%; overflow-y:scroll" id="messagesList">
+            @foreach (var message in messages)
+            {
+                <li>@message</li>
+            }
+        </ul>
+
+        <div class="form-group gameChatEntry" style="visibility: @gameScreenVisible">
+            <label>
+                Guess:
+                <input style="width:200px" @bind="messageInput" @onkeyup="Enter" size="50" />
+            </label>
+            <button @onclick="getGuess"  disabled="@(!IsConnected)" style="visibility:@gameScreenVisible">Send</button>
+
+        </div>
+
+
+    </div>
+</div>
+
+
+
+
+@code {
+
+    private HubConnection hubConnection;
+    private List<string> users = new List<string>();
+    private List<int> scores = new List<int>();
+
+    private List<string> messages = new List<string>();
+
+    private string userInput = "";
+    private string messageInput = "";
+    private string gameCode;
+
+    private String color = "red";
+    private String guess = "";
+    private bool disableJoin = true;
+    private bool isInvalidName = true;
+
+    private String enterNameScreenVisible = "block";
+    private String lobbyScreenVisible = "none";
+
+    private String scoreListVisible = "none";
+    private String gameScreenVisible = "hidden";
+    private String scoreScreenVisible = "hidden";
+    private String lobbyDisplay = "block";
+
+    private String readyButtonVisisble = "hidden";
+    private bool allReady;
+
+    private static Random random = new Random();
+    private Game game = new Game();
+
+    double visibility = 1;
+    double tableVis = 1;
+
+
+
+    protected override async Task OnInitializedAsync()
+    {
+
+        hubConnection = new HubConnectionBuilder()
+            .WithUrl(NavigationManager.ToAbsoluteUri("/chathub"))
+            .Build();
+
+        var uri = NavigationManager.ToAbsoluteUri(NavigationManager.Uri);
+        QueryHelpers.ParseQuery(uri.Query).TryGetValue("gamecode", out var gamecode);
+        gameCode = gamecode;
+
+        hubConnection.On<string, string>("ReceiveMessage", async (user, message) =>
+        {
+            if (message.Equals("%start game%"))
+            {
+                await StartGame();
+            }
+            else if (message.Equals("new user ready"))
+            {
+                setNewImage();
+            }
+            else if(message.Equals("sending scores"))
+            {
+                scores = ChatHub.getScoresList(gameCode);
+            }
+            else
+            {
+                var encodedMsg = $"{user}: {message}";
+                messages.Add(encodedMsg);
+                users = ChatHub.getUsernameList(gameCode);
+                scores = ChatHub.getScoresList(gameCode);
+                StateHasChanged();
+            }
+
+        });
+
+        await hubConnection.StartAsync();
+    }
+
+    // checks if user is connected and if userName is not blank
+    public bool CanJoinLobby =>
+    hubConnection.State == HubConnectionState.Connected && !userInput.Equals("");
+
+    public bool IsConnected =>
+    hubConnection.State == HubConnectionState.Connected;
+
+    async Task<bool> JoinGroup() =>
+     await hubConnection.InvokeAsync<bool>("AddToGroup", gameCode, userInput);
+
+    async Task SendGameStart() =>
+    await hubConnection.SendAsync("SendMessage", userInput, "%start game%", gameCode);
+
+    async Task SendCustomMessage(String message) =>
+    await hubConnection.SendAsync("SendMessage", userInput, message, gameCode);
+
+    async Task SendScore() =>
+await hubConnection.SendAsync("SendScore", userInput, score, gameCode);
+
+    async Task SendNewUser() =>
+    await hubConnection.SendAsync("SendMessage", userInput, "new user ready", gameCode);
+
+    async Task ReadyStatusTrue() =>
+    await hubConnection.SendAsync("ChangeStatusTrue", gameCode, userInput);
+
+    async Task ReadyStatusFalse() =>
+    await hubConnection.SendAsync("ChangeStatusFalse", gameCode, userInput);
+
+    async Task Send() =>
+    await hubConnection.SendAsync("SendMessage", userInput, messageInput, gameCode);
+
+    async Task GetNewImage() =>
+        await hubConnection.SendAsync("GetNewImage", gameCode);
+
+    async Task SetNewImage() =>
+        await hubConnection.SendAsync("SetNewImage", gameCode);
+
+
+    async Task<bool> allUsersReady() =>
+     await hubConnection.InvokeAsync<bool>("allUsersReady", gameCode);
+
+
+
+    private async Task<bool> usersReady()
+    {
+        return await allUsersReady();
+    }
+    private async Task setReadyStatus()
+    {
+        //expects chathub to flip the boolean for one of the ready status field
+        await ReadyStatusTrue();
+    }
+
+    // check if userName has been taken
+    private async Task checkValidName()
+    {
+        checkName();
+    }
+
+
+    public async ValueTask DisposeAsync()
+    {
+        await hubConnection?.DisposeAsync();
+
+    }
+
+    private async void sendGameMessage()
+    {
+
+        getGuess();
+        messageInput = "";
+    }
+
+    private async void setNewImage()
+    {
+        if (await allUsersReady())
+        {
+            allReady = true;
+            endPoint = timer;
+
+            messages.Clear();
+        }
+    }
+    private async void JoinRoom()
+    {
+        enterNameScreenVisible = "none";
+        lobbyScreenVisible = "block";
+        lobbyDisplay = "block";
+        await JoinGroup();
+
+        if (userInput.Equals(ChatHub.getGameHost(gameCode).getUserName()))
+        {
+            isHost = true;
+            timer = TIMER_MAX;
+        }
+
+    }
+
+    private async Task StartGame()
+    {
+        lobbyScreenVisible = "hidden";
+        gameScreenVisible = "visible";
+        lobbyDisplay = "none";
+        scoreListVisible = "block";
+        game = ChatHub.getHostGame(gameCode);
+        round = 1;
+        await startTimer();
+        //rescusitateTimer();
+    }
+
+
+    // want to be able to check if userName has been taken
+    public void checkName()
+    {
+        if (userInput != "")
+        {
+            isInvalidName = false;
+        }
+        else
+        {
+            isInvalidName = true;
+
+        }
+
+    }//game page code stuff
+
+
+    private const int TIMER_MAX = 30;
+    private int timer;
+    private string showTimer = "Welcome to Image Guesser";
+    DateTime prev = DateTime.Now;
+    DateTime curr = DateTime.Now;
+    private bool finishedRound = false;
+    private bool prevFinishedRound = false;
+
+    private int round = 1;
+    private int score = 0;
+    private string displayGameMessage = "Enter a guess";
+    private int endPoint;
+
+
+    private String closeMessage = "";
+    private String showCorrect = "";
+    private String showGuess = "";
+
+    private static System.Timers.Timer aTimer;
+
+    private String removeNum(String word)
+    {
+        word = game.getCurrentImage().getCorrectName();
+        char last = word[word.Length - 1];
+        if (Char.IsDigit(last))
+        {
+            return word.Substring(0, word.Length - 1);
+        }
+        return word;
+    }
+
+    async void getGuess()
+    {
+        //game.getCorrectWord().Equals(messageInput)
+        string correct = game.getCurrentImage().getCorrectName();
+        correct = removeNum(correct);
+
+        if (String.Equals(correct, messageInput, StringComparison.OrdinalIgnoreCase) && !finishedRound)
+        {
+            displayGameMessage = "You got the answer correct!";
+            score += (timer * 2);
+            color = "lightgreen";
+            finishedRound = true;
+            messageInput = "";
+            showTimer = "waiting for other players";
+            Console.WriteLine("inGetGuess");
+            await SendCustomMessage("I got the answer!");
+            await SendScore();
+        }
+        else
+        {
+            displayGameMessage = "You got the answer incorrect!";
+            color = "darkorange";
+
+            await Send();
+            messageInput = "";
+        }
+        List<char> splitCorrect = new List<char>();
+        List<char> splitGuess = new List<char>();
+
+        int longest = 0;
+        closeMessage = "";
+        if (correct.Length > messageInput.Length)
+        {
+            longest = correct.Length;
+        }
+        else
+        {
+            longest = messageInput.Length;
+        }
+        int diffChar = 0;
+
+        for (int i = 0; i < messageInput.Length; i++)
+        {
+            splitGuess.Add(messageInput[i]);
+        }
+        showGuess = String.Join(",", splitGuess);
+
+
+        for (int i = 0; i < correct.Length; i++)
+        {
+            splitCorrect.Add(correct[i]);
+        }
+
+        showCorrect = String.Join(",", splitCorrect);
+
+        for (int i = 0; i < splitCorrect.Count() && i < splitGuess.Count(); i++)
+        {
+            if (!splitGuess.Contains(splitCorrect.ElementAt(i)))
+            {
+                diffChar++;
+            }
+        }
+
+        if (messageInput.Length <= correct.Length + 1 && messageInput.Length >= correct.Length - 1)
+        {
+            if ((diffChar <= 2))
+            {
+                closeMessage = "You are close!";
+            }
+        }
+        else
+        {
+            closeMessage = "";
+        }
+    }
+
+    bool isHost = false;
+    private async Task testEnd()
+    {
+        if (round > 10)
+        {
+            showTimer = "Thanks for playing! Your score was:" + score;
+            await InvokeAsync(() =>
+            {
+                StateHasChanged();
+            });
+            return;
+
+        }
+
+        if ((finishedRound && !allReady))//&&!prevFinishedRound)
+        {
+            await ReadyStatusTrue();
+            Console.WriteLine("bruh1 \n");
+
+            await SendNewUser();
+            Console.WriteLine("bruh \n");
+
+
+        }
+
+        else
+        {
+            showTimer = "Time left: " + timer;
+        }
+        prevFinishedRound = finishedRound;
+        if (allReady)
+        {
+            showTimer = "the correct word was: " + (game.getCorrectWord()) + "\nnew round starting!";
+            if (timer - endPoint < -1)
+            {
+                Console.WriteLine("bro?? \n");
+                finishedRound = false;
+                if (isHost)
+                {
+                    resetTimer();
+                    //ChatHub.getGameHost(gameCode).setTimer(this.timer);
+                    ChatHub.roomTimers[gameCode] = timer;
+                    await SetNewImage();
+                }
+
+                /*
+
+                visibility = .2;
+                tableVis = 1;
+
+                System.Threading.Thread.Sleep(3000);
+                visibility = 1;
+                tableVis = 0;*/
+
+                round++;
+                game = ChatHub.getHostGame(gameCode);
+                startNextRound();
+                allReady = false;
+                await ReadyStatusFalse();
+            }
+
+        }
+    }
+
+    private async Task startTimer()
+    {
+        prev = DateTime.Now;
+        timer = 30;
+        //this is a thread that calls itself
+        aTimer = new System.Timers.Timer(1000);
+        aTimer.Elapsed += OnTimedEvent;
+        aTimer.AutoReset = true;
+        aTimer.Enabled = true;
+            /*
+            var loop = new Timer(new TimerCallback(async _ =>
+            {
+
+            int blurVal = timer - 10;
+            if (blurVal < 0) blurVal = 0;
+        await testEnd();
+        game.getCurrentImage().decreaseBlur(blurVal);
+
+            timer = ChatHub.roomTimers.GetValueOrDefault(gameCode);
+                if (isHost)
+                {
+                IncrementCount();
+            ChatHub.roomTimers[gameCode] = timer;
+                }
+
+
+        Console.WriteLine(timer + ", " + endPoint);
+
+        if (timer < 1)
+    {
+
+    if (!finishedRound)
+    {
+    finishedRound = true;
+    }
+    }
+
+    // the following line is so
+    // Blazor recognizes the state change and refreshes the UI
+    await InvokeAsync(() =>
+            {
+            StateHasChanged();
+    });
+    }), null, 0, 100);
+    */
+    }
+
+    private async void OnTimedEvent(Object source, ElapsedEventArgs e)
+    {
+        timer -= 1;
+        int blurVal = timer - 10;
+        if (blurVal < 0) blurVal = 0;
+        await testEnd();
+        game.getCurrentImage().decreaseBlur(blurVal);
+        /*
+        timer = ChatHub.roomTimers.GetValueOrDefault(gameCode);
+            if (isHost)
+            {
+            IncrementCount();
+            ChatHub.roomTimers[gameCode] = timer;
+        }
+
+        Console.WriteLine(timer + ", " + endPoint);
+        */
+        if (timer < 1)
+        {
+            if (!finishedRound)
+            {
+                finishedRound = true;
+            }
+        }
+
+        // the following line is so
+        // Blazor recognizes the state change and refreshes the UI
+        await InvokeAsync(StateHasChanged);
+        /*await InvokeAsync(() =>
+            {
+            StateHasChanged();
+         });*/        
+    }
+    private void IncrementCount()
+    {
+        curr = DateTime.Now;
+
+        int deltaTime = curr.Second - prev.Second;
+        //edge case for when time wraps around 60 to 0
+        if (Math.Abs(deltaTime) >= 59) deltaTime = Math.Abs(deltaTime) - 58;
+        prev = curr;
+
+        timer -= deltaTime;
+        Console.WriteLine(timer);
+
+
+    }
+
+    private async Task rescusitateTimer()
+    {
+        int prevTime = timer;
+        int counter = 0;
+        while (true)
+        {
+            if(counter > 1)
+            {
+                Console.WriteLine("rescusitating");
+                await startTimer();
+                counter = 0;
+            }
+            if (prevTime == timer)
+            {
+                counter++;
+            }
+            else
+            {
+                counter = 0;
+            }
+            Thread.Sleep(2000);
+        }
+    }
+    private void resetTimer()
+    {
+        timer = TIMER_MAX;
+    }
+
+    private void startNextRound()
+    {
+
+
+        displayGameMessage = "Enter a guess";
+        messageInput = "";
+        color = "red";
+        timer = ChatHub.roomTimers.GetValueOrDefault(gameCode);
+
+    }
+
+    public void Enter(KeyboardEventArgs e)
+    {
+        if (e.Code == "Enter" || e.Code == "NumpadEnter")
+        {
+            getGuess();
+        }
+    }
+}

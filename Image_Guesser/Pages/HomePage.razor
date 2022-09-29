@@ -1,0 +1,103 @@
+﻿@page "/" 
+@using Microsoft.AspNetCore.SignalR.Client
+@using Image_Guesser.Hubs;
+@inject NavigationManager NavigationManager
+<div style="margin:0 auto; text-align:center; transform: translate(0, 30vh)">
+
+    <h1>Welcome to Image Guesser!</h1>
+
+    <h5 >Enter code to join a room</h5>
+
+    <button class="btn btn-primary" id="guessText" @onclick="CreateRoom" disabled="@(!IsConnected)" >Create Room</button>
+    <button class="btn btn-primary" id="guessText" @onclick="JoinRoom" disabled="@(!IsConnected)" >Join Room</button>
+
+    <input id="groupBox"  @bind="groupInput">
+
+    <p style="width: 250px"> @message</p>
+</div>
+
+
+@code {
+
+    private HubConnection hubConnection;
+
+
+
+
+    private string messageInput;
+    private string groupInput;
+
+
+    private String color = "red";
+    private String message = "";
+    private String guess = "";
+    private bool disableJoin = true;
+    private bool isInvalidName = true;
+    public string codes = RandomString(5);
+    private static Random random = new Random();
+
+    protected override async Task OnInitializedAsync()
+    {
+        hubConnection = new HubConnectionBuilder()
+            .WithUrl(NavigationManager.ToAbsoluteUri("/chathub"))
+            .Build();
+
+        hubConnection.On<string, string>("ReceiveMessage", (user, message) =>
+        {
+            var encodedMsg = $"{user}";
+            StateHasChanged();
+        });
+
+        hubConnection.On<string, int>("ReceiveScore", (user, score) =>
+        {
+            var encodedMsg = $"{user}";
+            StateHasChanged();
+        });
+        await hubConnection.StartAsync();
+
+
+
+    }
+
+    public bool IsConnected =>
+    hubConnection.State == HubConnectionState.Connected;
+
+
+    async Task<bool> CheckGroup() =>
+     await hubConnection.InvokeAsync<bool>("CheckGroup", groupInput);
+
+    public static string RandomString(int length)
+    {
+        const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        return new string(Enumerable.Repeat(chars, length).Select(s => s[random.Next(s.Length)]).ToArray());
+    }
+
+    private async void CreateRoom()
+    {
+        NavigationManager.NavigateTo("/lobby?gamecode=" + codes);
+    }
+    // checks to see if room is available
+    private async Task JoinRoom()
+    {
+        // if available, join the room
+        if(await CheckGroup())
+        {
+            NavigationManager.NavigateTo("/lobby?gamecode=" + groupInput);
+        } else // if not avaiable, display  message
+        {
+            message = "this room doesn't exist";
+        }
+
+
+    }
+
+
+
+
+    public async ValueTask DisposeAsync()
+    {
+        await hubConnection?.DisposeAsync();
+
+    }
+
+}

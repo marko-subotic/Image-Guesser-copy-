@@ -1,0 +1,8 @@
+﻿@page "/start"
+<h3>Image Guesser</h3>
+<p>Please enter your game code.</p>
+<button class="btn btn-primary" onclick="location.href = '/counter'">Submit</button>
+<input @bind="gameCode">  
+@code {
+    String gameCode;
+}

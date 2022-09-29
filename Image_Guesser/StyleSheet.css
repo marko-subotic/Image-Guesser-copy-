@@ -1,0 +1,11 @@
+﻿body {
+    
+}
+blurredImage {
+    filter: blur(5px);
+
+    height: 100%;
+
+    background-position: center;
+    background-size: cover;
+}
